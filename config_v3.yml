@@ -1,0 +1,29 @@
+# Clean up the filtered directory after running (yes or no)
+clean: "yes"
+
+# Base path to the raw data directory
+raw_data_base_dir: "/mnt/Disk2/16s/emu/raw_data"
+
+# Base directory for output results or results_silva_db depending on the chosen database
+results_base_dir: "results"
+
+# Filtlong parameters
+filtlong:
+  min_length: 1200
+  max_length: 1600
+  min_mean_q: 30
+
+# Emu parameters
+emu:
+  type: "map-ont"
+  min_abundance: 0.005
+  db: "/mnt/Disk2/16s/emu/emu_database" #change to either emu_database or silva_db
+  N: 0 # max number of hits per read in the database
+  K: "300000"
+  mm2_forward_only: False
+  output_basename: ""
+  keep_files: True
+  keep_counts: True
+  keep_read_assignments: True
+  output_unclassified: True
+  threads: 24

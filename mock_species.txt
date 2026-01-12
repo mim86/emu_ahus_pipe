@@ -1,0 +1,6 @@
+Pseudomonas aeruginosa
+Klebsiella quasipneumoniae
+Enterococcus faecium
+Staphylococcus aureus
+Acinetobacter baumannii
+Escherichia coli

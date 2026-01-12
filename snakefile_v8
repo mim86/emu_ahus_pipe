@@ -1,0 +1,187 @@
+import os
+import glob
+
+configfile: "config.yaml"
+
+# Get base directories from the config
+raw_data_base_dir = config["raw_data_base_dir"]
+results_base_dir = config.get("results_base_dir", "results")
+
+# Get run_name from the command line
+run_name = config.get('run_name', None)
+if run_name is None:
+    print("Please specify run_name via --config run_name=...")
+    exit(1)
+
+# Get the clean parameter from the config
+clean = config.get('clean', 'no')
+if clean not in ['yes', 'no']:
+    print("Invalid value for 'clean' parameter. Use 'yes' or 'no'.")
+    exit(1)
+
+# Construct input and output directories using run_name
+fastq_dir = os.path.join(raw_data_base_dir, run_name)
+emu_params = config.get("emu", {})
+
+fastq_files = glob.glob(os.path.join(fastq_dir, "*.fastq.gz"))
+
+if not fastq_files:
+    print(f"No fastq.gz files found in the directory {fastq_dir}.")
+    exit(1)
+
+samples = {}
+for f in fastq_files:
+    basename = os.path.basename(f)
+    sample_name = basename[:-len('.fastq.gz')]
+    samples[sample_name] = f
+
+sample_names = list(samples.keys())
+
+# Output directories
+emu_output_dir = os.path.join(results_base_dir, run_name, "emu_results")
+QC_nanoplot_dir = os.path.join(results_base_dir, run_name, "QC_nanoplot")
+filtered_dir = os.path.join(results_base_dir, run_name, "filtered")
+logs_dir = os.path.join(results_base_dir, run_name, "logs")
+
+# Update emu_params with the new output directory
+emu_params['output_dir'] = emu_output_dir
+
+# Determine emu output basename template
+if emu_params.get('output_basename'):
+    emu_output_basename_template = emu_params.get('output_basename')
+else:
+    emu_output_basename_template = "{sample}_filtered"
+
+def build_emu_params(params):
+    param_list = []
+    if params.get('type'):
+        param_list.append('--type {}'.format(params['type']))
+    if params.get('min_abundance') is not None:
+        param_list.append('--min-abundance {}'.format(params['min_abundance']))
+    if params.get('db'):
+        param_list.append('--db {}'.format(params['db']))
+    if params.get('N'):
+        param_list.append('--N {}'.format(params['N']))
+    if params.get('K'):
+        param_list.append('--K {}'.format(params['K']))
+    if params.get('mm2_forward_only'):
+        param_list.append('--mm2-forward-only')
+    if params.get('keep_files'):
+        param_list.append('--keep-files')
+    if params.get('keep_counts'):
+        param_list.append('--keep-counts')
+    if params.get('keep_read_assignments'):
+        param_list.append('--keep-read-assignments')
+    if params.get('output_unclassified'):
+        param_list.append('--output-unclassified')
+    if params.get('threads'):
+        param_list.append('--threads {}'.format(params['threads']))
+    return ' '.join(param_list)
+
+rule all:
+    input:
+        # List of Emu output files
+        emu_outputs=expand(
+            f"{emu_output_dir}/{emu_output_basename_template}_rel-abundance.tsv",
+            sample=sample_names
+        ),
+        # Include clean_up output if clean is yes
+        cleaned=[f"{logs_dir}/cleaned.txt"] if clean == 'yes' else []
+
+rule nanoplot:
+    input:
+        fastq=lambda wildcards: samples[wildcards.sample]
+    output:
+        f"{QC_nanoplot_dir}/{{sample}}/NanoPlot-report.html"
+    log:
+        f"{logs_dir}/nanoplot_{{sample}}.log"
+    shell:
+        """
+        mkdir -p {logs_dir} {QC_nanoplot_dir}/{wildcards.sample}
+        NanoPlot --fastq {input.fastq} -o {QC_nanoplot_dir}/{wildcards.sample} > {log} 2>&1
+        """
+
+rule filtlong:
+    input:
+        fastq=lambda wildcards: samples[wildcards.sample],
+        nanoplot_html=f"{QC_nanoplot_dir}/{{sample}}/NanoPlot-report.html"
+    output:
+        filtered_fastq=f"{filtered_dir}/{{sample}}_filtered.fastq"
+    params:
+        filtered_dir=filtered_dir,
+        min_length=config["filtlong"].get("min_length", 0),
+        max_length=config["filtlong"].get("max_length", 0),
+        min_mean_q=config["filtlong"].get("min_mean_q", 0)
+    shell:
+        """
+        mkdir -p {params.filtered_dir}
+        filtlong --min_length {params.min_length} --max_length {params.max_length} --min_mean_q {params.min_mean_q} {input.fastq} > {output.filtered_fastq}
+        """
+
+rule emu:
+    input:
+        filtered_fastq=f"{filtered_dir}/{{sample}}_filtered.fastq"
+    output:
+        rel_abundance=f"{emu_output_dir}/{emu_output_basename_template}_rel-abundance.tsv"
+    params:
+        emu_opts=build_emu_params(emu_params),
+        output_dir=emu_output_dir,
+        output_basename=emu_output_basename_template,
+        logs_dir=logs_dir
+    shell:
+        r"""
+        mkdir -p {params.output_dir} {params.logs_dir}
+
+        # Case A: file missing or truly empty (0 bytes)
+        if [ ! -s "{input.filtered_fastq}" ]; then
+            echo "[EMU-SKIP] {wildcards.sample}: filtered FASTQ missing or empty" \
+              | tee "{params.logs_dir}/emu_{wildcards.sample}.log"
+            # Write a minimal, parse-safe placeholder:
+            #   - first two columns match Emu's spec (tax_id, rel_abundance)
+            #   - include an 'unassigned' row as Emu normally appends
+            #   - a 'note' column so you can see why this file exists
+            printf "tax_id\trel_abundance\tnote\nunassigned\t1.0\tno_reads_after_filtering\n" \
+              > "{output.rel_abundance}"
+            exit 0
+        fi
+
+        # Case B: non-zero size but no complete records (defensive)
+        # Count read headers (@...) at every 4th line.
+        READS=$(awk 'NR%4==1 && substr($0,1,1)=="@"{{c++}} END{{print c+0}}' "{input.filtered_fastq}")
+        if [ "$READS" -eq 0 ]; then
+            echo "[EMU-SKIP] {wildcards.sample}: file has no complete FASTQ records" \
+              | tee "{params.logs_dir}/emu_{wildcards.sample}.log"
+            printf "tax_id\trel_abundance\tnote\nunassigned\t1.0\tno_valid_fastq_records\n" \
+              > "{output.rel_abundance}"
+            exit 0
+        fi
+
+        # Case C: we have reads — run Emu
+        emu abundance "{input.filtered_fastq}" {params.emu_opts} \
+          --output-dir "{params.output_dir}" \
+          --output-basename "{params.output_basename}" \
+          > "{params.logs_dir}/emu_{wildcards.sample}.log" 2>&1
+        """
+
+rule clean_up:
+    input:
+        # Wait for all Emu outputs
+        expand(
+            f"{emu_output_dir}/{emu_output_basename_template}_rel-abundance.tsv",
+            sample=sample_names
+        )
+    output:
+        cleaned=f"{logs_dir}/cleaned.txt"
+    run:
+        import shutil
+        import os
+        # Remove the filtered directory
+        if os.path.exists(filtered_dir):
+            shutil.rmtree(filtered_dir)
+            print(f"Removed directory: {filtered_dir}")
+        else:
+            print(f"Directory not found: {filtered_dir}")
+        # Create the cleaned.txt file
+        os.makedirs(logs_dir, exist_ok=True)
+        with open(output.cleaned, 'w') as f:
+            f.write('Filtered directory cleaned up.\n')

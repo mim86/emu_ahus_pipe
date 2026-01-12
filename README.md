@@ -144,3 +144,83 @@ Things you typically change:
   Must match the **folder name** under `raw_data/` (e.g., `raw_data/Empyemer_07JAN26_etOH/`).
 - `clean=yes`  
   Recommended if you want filtered intermediates removed after successful completion.
+
+
+# Emu results concatenation script
+
+This script (`emu_analysis_v4.py`) merges multiple Emu result files from a sequencing run and applies the selected cutoffs, including an optional **mock abundance-based** filtering mode.
+
+**Run it from the EMU directory:**
+
+## Usage
+
+### Required argument
+`--current_run RUN_NAME`  
+Specifies the run name. The script expects Emu result files in:  
+`results/RUN_NAME/emu_results/`
+
+### Optional arguments
+`--keep species,genus,family,...`  
+Keeps only the specified taxonomic level columns. **No spaces** (comma-separated only).
+
+`--filter_by_abundance FLOAT`  
+Keeps rows where abundance is greater than the given value (accepted range: 0–1).
+
+`--filter_by_counts INT`  
+Keeps rows where estimated counts are greater than the given value (integer).
+
+`--mock_abundance barcodeXX`  
+Specifies the barcode of a mock sample. Requires `--mock_key`.
+
+`--mock_key FILE`  
+Path to a file listing mock species (e.g., `mock_species.txt`). Used to derive the minimum abundance threshold from the mock sample.
+
+## Special mock abundance processing
+
+If `--mock_abundance` is provided:
+
+- The script looks for `barcodeXX_filtered_rel-abundance.tsv` in:  
+  `results/RUN_NAME/emu_results/`
+- It reads the species list from `--mock_key`
+- It identifies the **minimum abundance** among those species in the mock sample
+- If `--filter_by_counts` is also provided, filtering is applied **first** on counts, then using the identified minimum mock abundance
+
+### Important constraints
+- `--mock_abundance` requires `--mock_key` **and** `--filter_by_counts`
+- `--mock_abundance` cannot be used together with `--filter_by_abundance`
+
+## Example commands
+
+### Basic merging (no filtering)
+```bash
+python emu_analysis_v4.py --current_run todays_run_1
+```
+
+### Merge + keep only selected columns (no filtering)
+```bash
+python emu_analysis_v4.py --current_run todays_run_1 --keep species,genus,family
+```
+
+### Filtering by abundance and counts (can also be used separately)
+```bash
+python emu_analysis_v4.py --current_run todays_run_1 --keep species,genus,family --filter_by_abundance 0.00001 --filter_by_counts 20
+```
+
+### Mock sample-based filtering (example)
+```bash
+python emu_analysis_v4.py --current_run todays_run_1 --keep species,genus,family --mock_abundance barcode19 --mock_key mock_species.txt --filter_by_counts 20
+```
+
+## Output files
+
+**Merged file:**  
+`results/RUN_NAME/emu_results/RUN_NAME_all_emu_rel_abundance.tsv`
+
+Example:  
+`results/16S_prosjekt_07NOV24_2/emu_results/16S_prosjekt_07NOV24_2_all_emu_rel_abundance.tsv`
+
+**Filtered file (if applied):**  
+`results/RUN_NAME/emu_results/RUN_NAME_filtered_[conditions]_emu_rel_abundance.tsv`
+
+Example:  
+`run1_filtered_counts_20_mock_abundance_0.005_emu_rel_abundance.tsv`

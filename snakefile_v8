@@ -60,7 +60,7 @@ def build_emu_params(params):
         param_list.append('--min-abundance {}'.format(params['min_abundance']))
     if params.get('db'):
         param_list.append('--db {}'.format(params['db']))
-    if params.get('N'):
+    if params.get('N') is not None:
         param_list.append('--N {}'.format(params['N']))
     if params.get('K'):
         param_list.append('--K {}'.format(params['K']))
